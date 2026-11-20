@@ -129,55 +129,43 @@
     });
   }
 
-  /* ---------- 依頼の欄 ---------- */
+  /* ---------- 依頼の欄（いつもの文を貼るだけ。中身は作る側が読み取る） ---------- */
 
   const MAKES = ['A3', '正方形', '両方'];
+  const EXAMPLE = '例）\nITEM POKER 100K\n黄色のイメージで\n\nStart 17:00　Late 22:00\nEntry(Re)：¥5,000 / 50,000点\n早割：19:00までの着席で…\n1位 50,000pt　2位 30,000pt\n\n正方形：ITEM POKER／100K／特殊ゲーム';
+  const firstLine = s => (String(s || '').split('\n').map(x => x.trim()).filter(Boolean)[0] || '').slice(0, 40);
 
   function formHtml(f, mode) {
     const v = k => esc(f[k] || '');
     return '<div class="pad white" style="padding-bottom:18px">' +
+      '<div class="f"><label>ポップに入れたい文字<span class="req">必ず</span></label>' +
+        '<textarea id="text" rows="13" placeholder="' + esc(EXAMPLE) + '">' + v('text') + '</textarea>' +
+        '<div class="tip">いつもの文をそのまま貼れば OK。色や雰囲気、正方形に入れる言葉も、ここに書けば読み取って作ります。</div></div>' +
+      '<div class="f"><label>作るもの<span class="req">必ず</span></label><div class="chips" id="make">' +
+        MAKES.map(m => '<button type="button" class="chip' + (f.make === m ? ' on' : '') + '" data-m="' + m + '">' + m + '</button>').join('') + '</div></div>' +
       '<div class="two">' +
         '<div class="f"><label>店舗</label><input id="store" list="stores" placeholder="例：札幌" value="' + v('store') + '"></div>' +
         '<div class="f"><label>いつまでに</label><input id="due" type="date" value="' + v('due') + '"></div>' +
       '</div>' +
       (mode === 'new' ? '<div class="f"><label>お名前</label><input id="name" placeholder="例：Kazuki" value="' + v('name') + '"></div>' : '') +
-      '<div class="f"><label>作るもの<span class="req">必ず</span></label><div class="chips" id="make">' +
-        MAKES.map(m => '<button type="button" class="chip' + (f.make === m ? ' on' : '') + '" data-m="' + m + '">' + m + '</button>').join('') + '</div></div>' +
-      '<div class="f"><label>大会名（ポップの題）<span class="req">必ず</span></label><input id="title" placeholder="例：ITEM POKER 100K" value="' + v('title') + '"></div>' +
-      '<div class="f"><label>色のイメージ</label><input id="color" placeholder="例：黄色" value="' + v('color') + '"></div>' +
-      '<div class="two">' +
-        '<div class="f"><label>開始</label><input id="start" placeholder="例：17:00" value="' + v('start') + '"></div>' +
-        '<div class="f"><label>レイト（締切）</label><input id="late" placeholder="例：22:00" value="' + v('late') + '"></div>' +
-      '</div>' +
-      '<div class="f"><label>参加費</label><textarea id="fee" rows="2" placeholder="例：Entry(Re) ¥5,000 / 50,000点">' + v('fee') + '</textarea></div>' +
-      '<div class="f"><label>プライズ</label><textarea id="prize" rows="3" placeholder="例：1位 50,000pt&#10;2位 30,000pt">' + v('prize') + '</textarea></div>' +
-      '<div class="f"><label>そのほか入れたい文（自由に）</label><textarea id="free" rows="4" placeholder="早割・学割・注意書きなど、ポップに入れたい文をそのまま">' + v('free') + '</textarea></div>' +
-      '<div id="sqbox">' +
-        '<div class="sec">正方形に入れる文字<small>空のままなら、上＝題／中央＝いちばん大きい数字／下＝参加費 で作ります。</small></div>' +
-        '<div class="f"><label>上の段</label><input id="sqTop" placeholder="例：ITEM POKER" value="' + v('sqTop') + '"></div>' +
-        '<div class="f"><label>中央（いちばん大きく）</label><input id="sqMid" placeholder="例：100K" value="' + v('sqMid') + '"></div>' +
-        '<div class="f"><label>下の段</label><input id="sqBottom" placeholder="例：特殊ゲーム" value="' + v('sqBottom') + '"></div>' +
-      '</div>' +
       '<div id="err"></div>';
   }
 
   function wireForm() {
-    const sync = () => { const on = $('#make .chip.on'); $('#sqbox').style.display = on && on.dataset.m === 'A3' ? 'none' : ''; };
     app.querySelectorAll('#make .chip').forEach(c => {
-      c.onclick = () => { app.querySelectorAll('#make .chip').forEach(x => x.classList.remove('on')); c.classList.add('on'); sync(); };
+      c.onclick = () => { app.querySelectorAll('#make .chip').forEach(x => x.classList.remove('on')); c.classList.add('on'); };
     });
-    sync();
   }
 
   function readForm() {
     const on = $('#make .chip.on');
     const f = { make: on ? on.dataset.m : '' };
-    ['store', 'due', 'name', 'title', 'color', 'start', 'late', 'fee', 'prize', 'free', 'sqTop', 'sqMid', 'sqBottom'].forEach(k => {
+    ['store', 'due', 'name', 'text'].forEach(k => {
       const el = $('#' + k); if (el) f[k] = el.value.trim();
     });
-    if (f.make === 'A3') { f.sqTop = ''; f.sqMid = ''; f.sqBottom = ''; }
+    if (!f.text) throw new Error('ポップに入れたい文字を書いてください');
     if (!f.make) throw new Error('「作るもの」を選んでください');
-    if (!f.title) throw new Error('「大会名（ポップの題）」を入れてください');
+    f.title = firstLine(f.text); // 一覧や通知に出す題は、1行目
     return f;
   }
 
@@ -246,10 +234,9 @@
   /* ---------- 1件の中身 ---------- */
 
   function detail(j) {
-    const rows = [['店・人', [j.store, j.userName ? j.userName + ' さん' : ''].filter(Boolean).join('　')], ['作るもの', j.make === '両方' ? 'A3 と 正方形' : j.make],
-      ['色', j.color], ['いつまで', day(j.due)], ['開始', j.start], ['レイト', j.late], ['参加費', j.fee], ['プライズ', j.prize], ['そのほか', j.free],
-      ['正方形 上', j.sqTop], ['正方形 中央', j.sqMid], ['正方形 下', j.sqBottom]];
-    return rows.filter(r => r[1]).map(r => '<div class="kv"><span>' + esc(r[0]) + '</span><b>' + nl(r[1]) + '</b></div>').join('');
+    const rows = [['店・人', [j.store, j.userName ? j.userName + ' さん' : ''].filter(Boolean).join('　')], ['作るもの', j.make === '両方' ? 'A3 と 正方形' : j.make], ['いつまで', day(j.due)]];
+    return rows.filter(r => r[1]).map(r => '<div class="kv"><span>' + esc(r[0]) + '</span><b>' + nl(r[1]) + '</b></div>').join('') +
+      (j.text ? '<div class="txt">' + nl(j.text) + '</div>' : '');
   }
   function images(j) {
     if (!j.a3 && !j.sq) return '';

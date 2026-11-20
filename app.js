@@ -217,9 +217,12 @@
     loading(me.owner ? '依頼の一覧' : '依頼の状況');
     const r = await api('list');
     const by = s => r.jobs.filter(j => j.status === s);
+    const onlyDone = qs.get('f') === 'done'; // メニューの「できたポップ」から来たとき
     let h = '';
     const group = (title, list, label) => { if (list.length) h += '<div class="grp">' + esc(title) + '（' + list.length + '）</div>' + list.map(j => item(j, typeof label === 'function' ? label(j) : label)).join(''); };
-    if (r.owner) {
+    if (onlyDone) {
+      group('できたポップ', by('delivered').slice(0, 40), '見る ›');
+    } else if (r.owner) {
       group('許可待ち', by('pending'), '許可する ›');
       group('仕上がりの確認待ち', by('review'), '確認する ›');
       group('作れなかったもの', by('error'), '見る ›');
@@ -233,9 +236,9 @@
       group('できたポップ', mine.filter(j => j.status === 'delivered').slice(0, 30), '見る ›');
       group('見送り', mine.filter(j => j.status === 'rejected').slice(0, 5), '見送り');
     }
-    if (!h) h = '<div class="empty">まだ依頼はありません。<br>右上の「＋ 依頼する」からどうぞ。</div>';
-    if (r.owner) h += '<div class="note">Mac が閉じている・寝ているときは、依頼を待たせておきます。Mac が開いたら、許可済みのものから順番に作ります。</div>';
-    app.innerHTML = header(me.owner ? '依頼の一覧' : '依頼の状況', opt) + '<div class="pad" style="padding-top:2px">' + h + '</div>';
+    if (!h) h = '<div class="empty">' + (onlyDone ? 'まだ、できたポップはありません。' : 'まだ依頼はありません。<br>右上の「＋ 依頼する」からどうぞ。') + '</div>';
+    if (r.owner && !onlyDone) h += '<div class="note">Mac が閉じている・寝ているときは、依頼を待たせておきます。Mac が開いたら、許可済みのものから順番に作ります。</div>';
+    app.innerHTML = header(onlyDone ? 'できたポップ' : (me.owner ? '依頼の一覧' : '依頼の状況'), opt) + '<div class="pad" style="padding-top:2px">' + h + '</div>';
     wire(opt);
     app.querySelectorAll('.it').forEach(b => { b.onclick = () => go({ v: 'job', id: b.dataset.id }); });
   }

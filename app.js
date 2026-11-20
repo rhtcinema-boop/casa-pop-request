@@ -1,14 +1,13 @@
-// casa ポップ依頼：スマホで開く画面（依頼・一覧・許可・仕上がり確認・直し）
+// casa ポップ依頼：依頼の文を作って、LINE でオーナーに送るだけのページ。
+// 窓口やログインは使わない。貼った文に、作るもの・店舗・いつまで・名前を付けて、LINE の「送る」画面を開く。
 (() => {
-  const CFG = window.POP_CONFIG || {};
-  const LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname); // 手元の試し用
   const app = document.getElementById('app');
-  let qs = new URLSearchParams(location.search);
-  let token = '';
-  let me = { name: '', owner: false };
-
+  const $ = s => app.querySelector(s);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const nl = s => esc(s).replace(/\n/g, '<br>');
+  const mem = {
+    get: k => { try { return localStorage.getItem('pop_' + k) || ''; } catch (e) { return ''; } },
+    set: (k, v) => { try { localStorage.setItem('pop_' + k, v); } catch (e) { /* 使えなくても困らない */ } }
+  };
   // 2026-11-22 → 11/22（日）
   const day = s => {
     const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -16,309 +15,67 @@
     const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
     return Number(m[2]) + '/' + Number(m[3]) + '（' + '日月火水木金土'[d.getDay()] + '）';
   };
-  const $ = s => app.querySelector(s);
-  const mem = {
-    get: k => { try { return localStorage.getItem('pop_' + k) || ''; } catch (e) { return ''; } },
-    set: (k, v) => { try { localStorage.setItem('pop_' + k, v); } catch (e) { /* 使えなくても困らない */ } }
-  };
-
-  /* ---------- 窓口とのやりとり ---------- */
-
-  async function api(action, data) {
-    const res = await fetch(CFG.gasUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({ action, idToken: token }, data || {}))
-    });
-    const j = await res.json();
-    if (!j.ok) {
-      if (j.error === 'LOGIN' && !LOCAL && window.liff) {
-        liff.logout();
-        liff.login({ redirectUri: location.href });
-        await new Promise(() => {});
-      }
-      throw new Error(j.error === 'LOGIN' ? 'LINE から開き直してください' : (j.error || 'うまくいきませんでした'));
-    }
-    return j;
-  }
-
-  function loadScript(src) {
-    return new Promise((ok, ng) => {
-      const s = document.createElement('script');
-      s.src = src; s.onload = ok; s.onerror = () => ng(new Error('読み込めませんでした。電波のよい所でもう一度開いてください'));
-      document.head.appendChild(s);
-    });
-  }
-
-  async function boot() {
-    try {
-      if (LOCAL) {
-        const as = qs.get('as') || 'staffA';
-        token = 'demo:' + as + ':' + (qs.get('name') || (as === 'owner' ? 'オーナー' : 'Kazuki'));
-        CFG.gasUrl = '/exec';
-      } else {
-        if (!CFG.gasUrl || !CFG.liffId) throw new Error('まだ準備中です');
-        await loadScript('https://static.line-scdn.net/liff/edge/2/sdk.js');
-        await liff.init({ liffId: CFG.liffId });
-        if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
-        token = liff.getIDToken();
-        qs = new URLSearchParams(location.search);
-      }
-      me = await api('me');
-      route();
-    } catch (e) { fatal(e); }
-  }
-
-  /* ---------- 画面の切り替え ---------- */
-
-  function go(params, replace) {
-    const next = new URLSearchParams();
-    ['as', 'name'].forEach(k => { if (qs.get(k)) next.set(k, qs.get(k)); });
-    Object.keys(params).forEach(k => { if (params[k] != null && params[k] !== '') next.set(k, params[k]); });
-    const url = location.pathname + '?' + next.toString();
-    if (replace) history.replaceState(null, '', url); else history.pushState(null, '', url);
-    qs = next;
-    route();
-  }
-  window.addEventListener('popstate', () => { qs = new URLSearchParams(location.search); route(); });
-
-  function route() {
-    window.scrollTo(0, 0);
-    const v = qs.get('v') || 'new', id = qs.get('id');
-    const run = { new: viewNew, list: viewList, job: () => viewJob(id), edit: () => viewEdit(id), reject: () => viewText('reject', id), redo: () => viewText('redo', id), fix: () => viewText('fix', id) }[v] || viewNew;
-    Promise.resolve().then(run).catch(fatal);
-  }
-
-  function closeApp() {
-    if (!LOCAL && window.liff && liff.isInClient && liff.isInClient()) liff.closeWindow();
-    else go({ v: 'list' });
-  }
-
-  function header(title, opt) {
-    opt = opt || {};
-    return '<div class="hd">' + (opt.back ? '<button class="bk" data-back>‹</button>' : '') + '<span>' + esc(title) + '</span><span class="sp"></span>' +
-      (opt.link ? '<button class="lk" data-link>' + esc(opt.link[0]) + '</button>' : '') + '</div>';
-  }
-  function wire(opt) {
-    opt = opt || {};
-    const b = $('[data-back]'); if (b) b.onclick = () => (history.length > 1 ? history.back() : go({ v: 'list' }));
-    const l = $('[data-link]'); if (l && opt.link) l.onclick = opt.link[1];
-  }
-  function loading(title) { app.innerHTML = header(title) + '<div class="wait">読み込み中…</div>'; }
-  function fatal(e) {
-    app.innerHTML = header('casa ポップ依頼') + '<div class="pad"><div class="err">' + esc((e && e.message) || e) + '</div><button class="btn plain" id="re">もう一度読み込む</button></div>';
-    $('#re').onclick = () => location.reload();
-  }
-  function showErr(e) {
-    let box = $('#err');
-    if (!box) return alert((e && e.message) || e);
-    box.innerHTML = '<div class="err">' + esc((e && e.message) || e) + '</div>';
-    box.scrollIntoView({ block: 'center' });
-  }
-  async function busy(btn, fn) {
-    const old = btn.textContent;
-    btn.disabled = true; btn.textContent = '送っています…';
-    try { await fn(); } catch (e) { btn.disabled = false; btn.textContent = old; showErr(e); }
-  }
-  function done(title, text, buttons) {
-    app.innerHTML = '<div class="done"><div class="mk">✓</div><h2>' + esc(title) + '</h2><p>' + nl(text) + '</p></div><div class="pad" id="acts"></div>';
-    buttons.forEach(b => {
-      const el = document.createElement('button');
-      el.className = 'btn ' + (b[2] || 'plain'); el.textContent = b[0]; el.onclick = b[1];
-      $('#acts').appendChild(el);
-    });
-  }
-
-  /* ---------- 依頼の欄（いつもの文を貼るだけ。中身は作る側が読み取る） ---------- */
 
   const MAKES = ['A3', '正方形', '両方'];
   const EXAMPLE = '例）\nITEM POKER 100K\n黄色のイメージで\n\nStart 17:00　Late 22:00\nEntry(Re)：¥5,000 / 50,000点\n早割：19:00までの着席で…\n1位 50,000pt　2位 30,000pt\n\n正方形：ITEM POKER／100K／特殊ゲーム';
-  const firstLine = s => (String(s || '').split('\n').map(x => x.trim()).filter(Boolean)[0] || '').slice(0, 40);
 
-  function formHtml(f, mode) {
-    const v = k => esc(f[k] || '');
-    return '<div class="pad white" style="padding-bottom:18px">' +
-      '<div class="f"><label>ポップに入れたい文字<span class="req">必ず</span></label>' +
-        '<textarea id="text" rows="13" placeholder="' + esc(EXAMPLE) + '">' + v('text') + '</textarea>' +
-        '<div class="tip">いつもの文をそのまま貼れば OK。色や雰囲気、正方形に入れる言葉も、ここに書けば読み取って作ります。</div></div>' +
-      '<div class="f"><label>作るもの<span class="req">必ず</span></label><div class="chips" id="make">' +
-        MAKES.map(m => '<button type="button" class="chip' + (f.make === m ? ' on' : '') + '" data-m="' + m + '">' + m + '</button>').join('') + '</div></div>' +
-      '<div class="two">' +
-        '<div class="f"><label>店舗</label><input id="store" list="stores" placeholder="例：札幌" value="' + v('store') + '"></div>' +
-        '<div class="f"><label>いつまでに</label><input id="due" type="date" value="' + v('due') + '"></div>' +
-      '</div>' +
-      (mode === 'new' ? '<div class="f"><label>お名前</label><input id="name" placeholder="例：Kazuki" value="' + v('name') + '"></div>' : '') +
-      '<div id="err"></div>';
-  }
-
-  function wireForm() {
+  function render() {
+    const v = k => esc(mem.get(k));
+    app.innerHTML =
+      '<div class="hd"><span>ポップを依頼する</span></div>' +
+      '<div class="pad white" style="padding-bottom:22px">' +
+        '<div class="f"><label for="text">ポップに入れたい文字<span class="req">必ず</span></label>' +
+          '<textarea id="text" rows="13" placeholder="' + esc(EXAMPLE) + '">' + v('draft') + '</textarea>' +
+          '<div class="tip">いつもの文をそのまま貼れば OK。色や雰囲気、正方形に入れる言葉も、ここに書いてください。</div></div>' +
+        '<div class="f"><label>作るもの<span class="req">必ず</span></label><div class="chips" id="make">' +
+          MAKES.map(m => '<button type="button" class="chip' + ((mem.get('make') || '両方') === m ? ' on' : '') + '" data-m="' + m + '">' + m + '</button>').join('') + '</div></div>' +
+        '<div class="two">' +
+          '<div class="f"><label for="store">店舗</label><input id="store" list="stores" placeholder="例：札幌" value="' + v('store') + '"></div>' +
+          '<div class="f"><label for="due">いつまでに</label><input id="due" type="date"></div>' +
+        '</div>' +
+        '<div class="f"><label for="name">お名前</label><input id="name" placeholder="例：Kazuki" value="' + v('name') + '"></div>' +
+        '<div id="err"></div>' +
+        '<button class="btn ok" id="send">LINE で送る</button>' +
+        '<button class="btn plain" id="copy">文をコピーする</button>' +
+        '<div class="hint" id="hint">「LINE で送る」を押すと LINE が開きます。<br>送り先にオーナーを選んで、送信してください。</div>' +
+      '</div>';
     app.querySelectorAll('#make .chip').forEach(c => {
       c.onclick = () => { app.querySelectorAll('#make .chip').forEach(x => x.classList.remove('on')); c.classList.add('on'); };
     });
+    $('#text').addEventListener('input', () => mem.set('draft', $('#text').value));
+    $('#send').onclick = () => act(msg => {
+      location.href = 'https://line.me/R/share?text=' + encodeURIComponent(msg);
+      note('LINE が開かないときは、「文をコピーする」を押して、LINE に貼って送ってください。');
+    });
+    $('#copy').onclick = () => act(async msg => {
+      try { await navigator.clipboard.writeText(msg); }
+      catch (e) { const t = document.createElement('textarea'); t.value = msg; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
+      note('コピーしました。LINE を開いて、オーナーとのトークに貼って送ってください。');
+    });
   }
 
-  function readForm() {
+  function note(s) { $('#hint').textContent = s; }
+
+  // 欄を読んで、送る文を作る
+  function act(fn) {
+    $('#err').innerHTML = '';
     const on = $('#make .chip.on');
-    const f = { make: on ? on.dataset.m : '' };
-    ['store', 'due', 'name', 'text'].forEach(k => {
-      const el = $('#' + k); if (el) f[k] = el.value.trim();
-    });
-    if (!f.text) throw new Error('ポップに入れたい文字を書いてください');
-    if (!f.make) throw new Error('「作るもの」を選んでください');
-    f.title = firstLine(f.text); // 一覧や通知に出す題は、1行目
-    return f;
+    const f = { text: $('#text').value.trim(), make: on ? on.dataset.m : '', store: $('#store').value.trim(), due: $('#due').value, name: $('#name').value.trim() };
+    if (!f.text) return fail('ポップに入れたい文字を書いてください');
+    if (!f.make) return fail('「作るもの」を選んでください');
+    mem.set('store', f.store); mem.set('name', f.name); mem.set('make', f.make);
+    const head = ['【ポップ依頼】', '作るもの：' + (f.make === '両方' ? '両方（A3 と 正方形）' : f.make + ' だけ')];
+    if (f.store) head.push('店舗：' + f.store);
+    if (f.due) head.push('いつまで：' + day(f.due));
+    if (f.name) head.push('依頼：' + f.name);
+    window.__lastMessage = head.join('\n') + '\n――――――\n' + f.text; // 確かめ用
+    mem.set('draft', ''); // 送ったら、次に開いたときは空から（今の画面の文はそのまま残る）
+    fn(window.__lastMessage);
+  }
+  function fail(s) {
+    $('#err').innerHTML = '<div class="err">' + esc(s) + '</div>';
+    $('#err').scrollIntoView({ block: 'center' });
   }
 
-  function viewNew() {
-    const opt = { link: ['依頼の状況', () => go({ v: 'list' })] };
-    app.innerHTML = header('ポップを依頼する', opt) +
-      formHtml({ store: mem.get('store'), name: mem.get('name') || me.name, make: '両方' }, 'new') +
-      '<button class="btn ok" id="send">依頼を送る</button>' +
-      '<div class="hint">送るとオーナーに届きます。<br>許可が出たら作り始めます。</div></div>';
-    wire(opt); wireForm();
-    $('#send').onclick = ev => busy(ev.target, async () => {
-      const f = readForm();
-      mem.set('store', f.store); mem.set('name', f.name);
-      const r = await api('submit', { fields: f });
-      done('依頼を送りました', '受付番号 ' + r.id + '\nオーナーの許可が出たら作り始めます。\nできあがったら LINE に届きます。', [
-        ['依頼の状況を見る', () => go({ v: 'list' }), 'sub'], ['閉じる', closeApp]
-      ]);
-    });
-  }
-
-  /* ---------- 一覧 ---------- */
-
-  const STAFF_TEXT = { pending: '許可待ち', approved: '作成待ち', working: '作成中', review: 'オーナーが確認中', delivered: '届きました', rejected: '見送り', closed: '作り直し中', error: '作成中' };
-  const TAG = { pending: 'w', approved: 'm', working: 'm', review: 'c', delivered: 'd', rejected: 'g', closed: 'g', error: 'c' };
-
-  function sub(j) {
-    const who = [j.store, me.owner && j.userName ? j.userName + ' さん' : ''].filter(Boolean).join('・');
-    const make = j.make === '両方' ? 'A3＋正方形' : j.make;
-    return [who, make, j.kind === 'fix' ? '直し' : ''].filter(Boolean).join('　');
-  }
-  function item(j, label) {
-    return '<button class="it" data-id="' + esc(j.id) + '"><div class="t"><b>' + esc(j.title) + '</b><span>' + esc(sub(j)) + '</span></div><span class="tag ' + TAG[j.status] + '">' + esc(label) + '</span></button>';
-  }
-
-  async function viewList() {
-    const opt = { link: ['＋ 依頼する', () => go({ v: 'new' })] };
-    loading(me.owner ? '依頼の一覧' : '依頼の状況');
-    const r = await api('list');
-    const by = s => r.jobs.filter(j => j.status === s);
-    const onlyDone = qs.get('f') === 'done'; // メニューの「できたポップ」から来たとき
-    let h = '';
-    const group = (title, list, label) => { if (list.length) h += '<div class="grp">' + esc(title) + '（' + list.length + '）</div>' + list.map(j => item(j, typeof label === 'function' ? label(j) : label)).join(''); };
-    if (onlyDone) {
-      group('できたポップ', by('delivered').slice(0, 40), '見る ›');
-    } else if (r.owner) {
-      group('許可待ち', by('pending'), '許可する ›');
-      group('仕上がりの確認待ち', by('review'), '確認する ›');
-      group('作れなかったもの', by('error'), '見る ›');
-      group('Mac が作成中', by('working'), '作成中');
-      group('作成待ち（Mac が開いたら作ります）', by('approved'), '作成待ち');
-      group('届け済み', by('delivered').slice(0, 20), '完了');
-      group('お断り', by('rejected').slice(0, 5), 'お断り');
-    } else {
-      const mine = r.jobs;
-      group('進んでいるもの', mine.filter(j => ['pending', 'approved', 'working', 'review', 'error', 'closed'].includes(j.status)), j => STAFF_TEXT[j.status]);
-      group('できたポップ', mine.filter(j => j.status === 'delivered').slice(0, 30), '見る ›');
-      group('見送り', mine.filter(j => j.status === 'rejected').slice(0, 5), '見送り');
-    }
-    if (!h) h = '<div class="empty">' + (onlyDone ? 'まだ、できたポップはありません。' : 'まだ依頼はありません。<br>右上の「＋ 依頼する」からどうぞ。') + '</div>';
-    if (r.owner && !onlyDone) h += '<div class="note">Mac が閉じている・寝ているときは、依頼を待たせておきます。Mac が開いたら、許可済みのものから順番に作ります。</div>';
-    app.innerHTML = header(onlyDone ? 'できたポップ' : (me.owner ? '依頼の一覧' : '依頼の状況'), opt) + '<div class="pad" style="padding-top:2px">' + h + '</div>';
-    wire(opt);
-    app.querySelectorAll('.it').forEach(b => { b.onclick = () => go({ v: 'job', id: b.dataset.id }); });
-  }
-
-  /* ---------- 1件の中身 ---------- */
-
-  function detail(j) {
-    const rows = [['店・人', [j.store, j.userName ? j.userName + ' さん' : ''].filter(Boolean).join('　')], ['作るもの', j.make === '両方' ? 'A3 と 正方形' : j.make], ['いつまで', day(j.due)]];
-    return rows.filter(r => r[1]).map(r => '<div class="kv"><span>' + esc(r[0]) + '</span><b>' + nl(r[1]) + '</b></div>').join('') +
-      (j.text ? '<div class="txt">' + nl(j.text) + '</div>' : '');
-  }
-  function images(j) {
-    if (!j.a3 && !j.sq) return '';
-    return '<div class="card"><div class="ct">できたポップ</div><div class="imgs">' +
-      (j.a3 ? '<a class="a3" href="' + esc(j.a3) + '" target="_blank" rel="noopener"><img src="' + esc(j.a3p || j.a3) + '" alt="A3">A3（押すと大きく）</a>' : '') +
-      (j.sq ? '<a class="sq" href="' + esc(j.sq) + '" target="_blank" rel="noopener"><img src="' + esc(j.sqp || j.sq) + '" alt="正方形">正方形</a>' : '') +
-      '</div></div>';
-  }
-
-  async function viewJob(id) {
-    loading('依頼の中身');
-    const r = await api('get', { id });
-    const j = r.job, o = r.owner;
-    const label = o ? j.statusText : STAFF_TEXT[j.status];
-    let acts = '';
-    if (o && j.status === 'pending') acts = '<button class="btn ok" data-a="approve">許可する</button><div class="brow"><button class="btn sub" data-a="edit">直して許可</button><button class="btn ng" data-a="reject">断る</button></div>';
-    if (o && j.status === 'review') acts = '<button class="btn ok" data-a="deliver">OK・スタッフに届ける</button><button class="btn sub" data-a="redo">作り直す（直しを書く）</button><div class="hint">OK を押すまで、スタッフには見えません。</div>';
-    if (o && j.status === 'error') acts = '<button class="btn ok" data-a="retry">もう一度作る</button>';
-    if (o && j.status === 'delivered') acts = '<button class="btn sub" data-a="redo">作り直す（直しを書く）</button>';
-    if (!o && j.mine && j.status === 'delivered') acts = '<button class="btn sub" data-a="fix">直しを頼む</button><div class="hint">画像を押すと大きく開きます。長押しで保存できます。</div>';
-    // 仕上がりを見る場面では、画像のすぐ下にボタンを置く（下まで送らなくてよいように）
-    const top = j.a3 || j.sq;
-    app.innerHTML = header('依頼の中身', { back: true }) + '<div class="pad">' +
-      images(j) + (top ? '<div id="err"></div><div style="margin:-2px 0 14px">' + acts + '</div>' : '') +
-      '<div class="card"><div class="ct">' + esc(j.title) + '</div><div style="margin:8px 0 4px"><span class="tag ' + TAG[j.status] + '">' + esc(label) + '</span>　<span style="font-size:12.5px;color:#6b7380;font-weight:700">番号 ' + esc(j.id) + '</span></div>' +
-      (j.kind === 'fix' ? '<div class="fixbox"><small>直したい所（番号 ' + esc(j.parent) + ' の直し）</small>' + nl(j.note) + '</div>' : '') +
-      (j.status === 'rejected' && j.msg ? '<div class="fixbox"><small>オーナーから</small>' + nl(j.msg) + '</div>' : '') +
-      (o && j.status === 'error' && j.msg ? '<div class="fixbox"><small>作れなかった理由</small>' + nl(j.msg) + '</div>' : '') +
-      detail(j) + '</div>' + (top ? '' : '<div id="err"></div>' + acts) + '</div>';
-    wire();
-    app.querySelectorAll('[data-a]').forEach(b => {
-      b.onclick = () => {
-        const a = b.dataset.a;
-        if (a === 'edit' || a === 'reject' || a === 'redo' || a === 'fix') return go({ v: a, id });
-        busy(b, async () => {
-          const x = a === 'deliver' ? await api('deliver', { id }) : await api('decide', { id, decision: a });
-          done(x.message, '', [['一覧へ', () => go({ v: 'list' }), 'sub'], ['閉じる', closeApp]]);
-        });
-      };
-    });
-  }
-
-  async function viewEdit(id) {
-    loading('直して許可');
-    const r = await api('get', { id });
-    if (!r.owner) throw new Error('この操作はオーナーだけができます');
-    app.innerHTML = header('直して許可', { back: true }) + formHtml(r.job, 'edit') +
-      '<button class="btn ok" id="send">この内容で許可する</button></div>';
-    wire(); wireForm();
-    $('#send').onclick = ev => busy(ev.target, async () => {
-      const x = await api('decide', { id, decision: 'approve', fields: readForm() });
-      done(x.message, '', [['一覧へ', () => go({ v: 'list' }), 'sub'], ['閉じる', closeApp]]);
-    });
-  }
-
-  const TEXTS = {
-    reject: { title: '断る', label: 'スタッフへのひとこと（なくてもOK）', ph: '例：今月はこの大会をやらないので見送りです', btn: '断る', cls: 'ng' },
-    redo: { title: '作り直す', label: '直したい所', ph: '例：題字をもっと大きく。プライズの4位を消す', btn: 'この直しで作り直す', cls: 'ok' },
-    fix: { title: '直しを頼む', label: '直したい所', ph: '例：正方形の下の段を「Entry ¥5,000」に変えてください', btn: '直しを送る', cls: 'ok' }
-  };
-
-  async function viewText(kind, id) {
-    const t = TEXTS[kind];
-    loading(t.title);
-    const r = await api('get', { id });
-    app.innerHTML = header(t.title, { back: true }) + '<div class="pad">' + (kind === 'reject' ? '' : images(r.job)) +
-      '<div class="card"><div class="ct">' + esc(r.job.title) + '</div><div style="font-size:12.5px;color:#6b7380;font-weight:700;margin-top:4px">番号 ' + esc(r.job.id) + '</div></div>' +
-      '<div class="f"><label>' + esc(t.label) + '</label><textarea id="text" rows="5" placeholder="' + esc(t.ph) + '"></textarea></div><div id="err"></div>' +
-      '<button class="btn ' + t.cls + '" id="send">' + esc(t.btn) + '</button>' +
-      (kind === 'fix' ? '<div class="hint">オーナーの許可が出たら作り直します。</div>' : '') + '</div>';
-    wire();
-    $('#send').onclick = ev => busy(ev.target, async () => {
-      const text = $('#text').value.trim();
-      if (kind === 'reject') {
-        const x = await api('decide', { id, decision: 'reject', msg: text });
-        return done(x.message, '', [['一覧へ', () => go({ v: 'list' }), 'sub'], ['閉じる', closeApp]]);
-      }
-      const x = await api(kind, { id, text });
-      const msg = x.status === 'approved' ? 'Mac が開いていれば、まもなく作り直します。' : 'オーナーの許可が出たら作り直します。';
-      done('直しを受け付けました', '受付番号 ' + x.id + '\n' + msg, [['依頼の状況を見る', () => go({ v: 'list' }), 'sub'], ['閉じる', closeApp]]);
-    });
-  }
-
-  boot();
+  render();
 })();
